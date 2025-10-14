@@ -1,7 +1,6 @@
--- LocalBrainrotSpawnerInYourPlot.lua
+-- LocalBrainrotPodiumSpawner.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
 -- Config
@@ -11,7 +10,7 @@ if not ANIMALS_FOLDER then
     return
 end
 
--- Function to find your personal plot
+-- Find your plot dynamically
 local function getMyPlot()
     local plotsFolder = workspace:FindFirstChild("Plots") or workspace:FindFirstChild("plots")
     if not plotsFolder then return nil end
@@ -27,18 +26,7 @@ local function getMyPlot()
     return nil
 end
 
--- Create local folder inside plot for client-only clones
-local function getLocalFolder(plot)
-    local folder = plot:FindFirstChild("LocalBrainrots")
-    if not folder then
-        folder = Instance.new("Folder")
-        folder.Name = "LocalBrainrots"
-        folder.Parent = plot
-    end
-    return folder
-end
-
--- Safe clone helper
+-- Safe clone
 local function safeClone(template)
     local ok, clone = pcall(function() return template:Clone() end)
     if not ok or not clone then return nil end
@@ -57,67 +45,61 @@ local function safeClone(template)
     return clone
 end
 
--- Place clone at position in plot
-local function placeCloneAt(folder, clone, pos)
-    if clone.PrimaryPart then
-        clone:SetPrimaryPartCFrame(CFrame.new(pos))
-    else
-        local root = clone:FindFirstChildWhichIsA("BasePart", true)
-        if root then root.Position = pos end
-    end
-    clone.Parent = folder
-end
-
--- Spawn 67 brainrots in your plot in a neat grid
-local function spawnBrainrotsInPlot()
+-- Spawn brainrots in their podiums
+local function spawnPodiums()
     local plot = getMyPlot()
     if not plot then
-        warn("Could not find your plot.")
+        warn("Could not find your plot")
         return
     end
-    local folder = getLocalFolder(plot)
-    
-    -- Clear previous
-    for _, obj in ipairs(folder:GetChildren()) do
-        pcall(function() obj:Destroy() end)
-    end
-    
-    local templates = ANIMALS_FOLDER:GetChildren()
-    if #templates == 0 then
-        warn("No templates found in Models.Animals")
-        return
-    end
-    
-    -- Use a reference part in plot (first BasePart found)
-    local plotRoot = plot:FindFirstChildWhichIsA("BasePart", true)
-    if not plotRoot then
-        plotRoot = Instance.new("Part")
-        plotRoot.Position = plot:GetModelCFrame().p or Vector3.new(0,5,0)
-    end
 
-    local centerPos = plotRoot.Position + Vector3.new(0,2,0) -- slight vertical offset
-    local side = math.ceil(math.sqrt(67))
-    local spacing = 3
-    local idx = 0
-
-    for y = 1, side do
-        for x = 1, side do
-            if idx >= 67 then break end
-            local template = templates[(idx % #templates) + 1]
-            local clone = safeClone(template)
-            local pos = centerPos + Vector3.new((x-(side+1)/2)*spacing, 0, (y-(side+1)/2)*spacing)
-            placeCloneAt(folder, clone, pos)
-            idx = idx + 1
+    -- Local folder to hold client-side brainrots
+    local localFolder = plot:FindFirstChild("LocalBrainrots")
+    if not localFolder then
+        localFolder = Instance.new("Folder")
+        localFolder.Name = "LocalBrainrots"
+        localFolder.Parent = plot
+    else
+        -- Clear previous
+        for _, obj in ipairs(localFolder:GetChildren()) do
+            pcall(function() obj:Destroy() end)
         end
-        if idx >= 67 then break end
+    end
+
+    local podiumsFolder = plot:FindFirstChild("AnimalPodiums")
+    if not podiumsFolder then
+        warn("No AnimalPodiums found in your plot")
+        return
+    end
+
+    for _, podium in ipairs(podiumsFolder:GetChildren()) do
+        local spawnAttachment = podium:FindFirstChild("Base") and podium.Base:FindFirstChild("Spawn") and podium.Base.Spawn:FindFirstChild("Attachment")
+        if spawnAttachment then
+            local overhead = spawnAttachment:FindFirstChild("AnimalOverhead")
+            local displayName = overhead and overhead:FindFirstChild("DisplayName") and overhead.DisplayName.Text
+            if displayName then
+                -- Find matching brainrot template in ReplicatedStorage.Models.Animals
+                local template = ANIMALS_FOLDER:FindFirstChild(displayName)
+                if template then
+                    local clone = safeClone(template)
+                    if clone and clone.PrimaryPart then
+                        clone:SetPrimaryPartCFrame(spawnAttachment.CFrame)
+                        clone.Parent = localFolder
+                    end
+                else
+                    warn("Template not found for brainrot:", displayName)
+                end
+            end
+        end
     end
 end
 
 -- Keybinds
+local UserInputService = game:GetService("UserInputService")
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.KeyCode == Enum.KeyCode.B then
-        spawnBrainrotsInPlot()
+        spawnPodiums()
     elseif input.KeyCode == Enum.KeyCode.R then
         local plot = getMyPlot()
         if plot then
@@ -131,4 +113,4 @@ UserInputService.InputBegan:Connect(function(input, gp)
     end
 end)
 
-print("Client-side brainrot plot spawner loaded. Press B to spawn 67 brainrots in your plot. Press R to clear.")
+print("Client-side podium spawner loaded. Press B to spawn brainrots in podiums. Press R to clear.")
