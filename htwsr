@@ -1,25 +1,27 @@
--- SafeLocalSpawner_67.lua  (LocalScript -> StarterPlayerScripts)
--- Spawns 67 client-only clones from ReplicatedStorage.Models.Animals into workspace.Plots (safe, local-only)
+-- LocalBrainrotUI.lua  (LocalScript -> StarterPlayerScripts)
+-- Client-only. Reads ReplicatedStorage.Models.Animals, shows UI, preview, click-to-place, spawn 67 in grid.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
+local mouse = player:GetMouse()
 local camera = workspace.CurrentCamera
 
 -- Config
-local ANIMALS_FOLDER = ReplicatedStorage:FindFirstChild("Models") and ReplicatedStorage.Models:FindFirstChild("Animals")
-if not ANIMALS_FOLDER then
-    warn("ReplicatedStorage.Models.Animals not found. Aborting spawner.")
+local MODELS_FOLDER = ReplicatedStorage:FindFirstChild("Models") and ReplicatedStorage.Models:FindFirstChild("Animals")
+if not MODELS_FOLDER then
+    warn("ReplicatedStorage.Models.Animals not found. Local spawner aborted.")
     return
 end
 local PLOTS_PARENT = workspace:FindFirstChild("Plots") or workspace:FindFirstChild("plots") or workspace
 local LOCAL_FOLDER_NAME = "LocalClientBrainrots"
-local TOTAL_TO_SPAWN = 67
-local SCALE = 1
-local SPACING = 3
+local DEFAULT_TOTAL = 67
+local GRID_SPACING = 3
+local PREVIEW_TRANSPARENCY = 0.55
 
--- Create / reuse local folder
+-- Setup local folder to hold clones
 local localFolder = workspace:FindFirstChild(LOCAL_FOLDER_NAME)
 if not localFolder then
     localFolder = Instance.new("Folder")
@@ -27,175 +29,314 @@ if not localFolder then
     localFolder.Parent = workspace
 end
 
-local spawned = {} -- [Instance] = true
+local spawnedInstances = {}   -- track spawned clones to clear
+local previewInstance = nil   -- current preview model
+local selectedTemplate = nil
+local selectedName = nil
+local placeMode = false       -- if true, clicking spawns single at cursor
 
--- safe clone helper
+-- Safe clone: removes scripts, anchors parts, disables collisions
 local function safeClone(template)
     local ok, clone = pcall(function() return template:Clone() end)
     if not ok or not clone then return nil end
-    -- ensure primarypart
+    -- ensure PrimaryPart for positioning
     if not clone.PrimaryPart then
-        local pr = clone:FindFirstChildWhichIsA("BasePart", true)
-        if pr then clone.PrimaryPart = pr end
+        local prim = clone:FindFirstChildWhichIsA("BasePart", true)
+        if prim then clone.PrimaryPart = prim end
     end
-    -- make client-only: anchor & disable collisions
+    -- sanitize descendant objects
     for _,d in ipairs(clone:GetDescendants()) do
         if d:IsA("BasePart") then
+            -- keep parts visible but non-physical
             d.Anchored = true
             d.CanCollide = false
-        end
-        -- remove any scripts to avoid running code clientside
-        if d:IsA("Script") or d:IsA("LocalScript") then
+        elseif d:IsA("Script") or d:IsA("LocalScript") or d:IsA("ModuleScript") then
             pcall(function() d:Destroy() end)
         end
     end
     return clone
 end
 
--- place single clone at position
-local function placeClone(clone, pos)
+-- Place a clone at position and parent to plots/workspace (client-only)
+local function placeCloneAt(clone, position)
+    if not clone then return end
     if clone.PrimaryPart then
-        clone:SetPrimaryPartCFrame(CFrame.new(pos) * CFrame.Angles(0, math.rad(math.random()*360), 0))
+        clone:SetPrimaryPartCFrame(CFrame.new(position) * CFrame.Angles(0, math.rad(math.random()*360), 0))
     else
         local root = clone:FindFirstChildWhichIsA("BasePart", true)
-        if root then root.Position = pos end
+        if root then root.Position = position end
     end
     clone.Parent = PLOTS_PARENT
     clone.Name = (clone.Name or "Brainrot") .. "_local_" .. tostring(math.floor(tick()*1000))
-    spawned[clone] = true
+    spawnedInstances[clone] = true
     return clone
 end
 
--- spawn N clones using templates in round-robin
-local function spawnN(n)
-    local templates = ANIMALS_FOLDER:GetChildren()
-    if #templates == 0 then
-        warn("No templates in ReplicatedStorage.Models.Animals")
-        return
+-- Clear all local spawned clones
+local function clearAll()
+    for inst,_ in pairs(spawnedInstances) do
+        pcall(function() inst:Destroy() end)
+        spawnedInstances[inst] = nil
     end
-    -- center in front of camera
-    local center = camera.CFrame.Position + camera.CFrame.LookVector * 10
+    -- also remove preview if any
+    if previewInstance and previewInstance.Parent then
+        pcall(function() previewInstance:Destroy() end)
+        previewInstance = nil
+    end
+end
+
+-- Spawn N in a tidy grid, rotating through available templates or using selected template
+local function spawnGrid(n, centerPos, spacing)
+    spacing = spacing or GRID_SPACING
+    centerPos = centerPos or (camera.CFrame.Position + camera.CFrame.LookVector * 10)
+    local templates = MODELS_FOLDER:GetChildren()
+    if #templates == 0 then warn("No templates in Models.Animals") return end
     local side = math.ceil(math.sqrt(n))
     local idx = 0
     for y = 1, side do
         for x = 1, side do
             if idx >= n then break end
-            local t = templates[(idx % #templates) + 1]
-            local pos = center + Vector3.new((x-(side+1)/2)*SPACING, 0, (y-(side+1)/2)*SPACING)
-            local c = safeClone(t)
-            if c then placeClone(c, pos) end
+            local template
+            if selectedName and MODELS_FOLDER:FindFirstChild(selectedName) then
+                template = MODELS_FOLDER[selectedName]
+            else
+                template = templates[(idx % #templates) + 1]
+            end
+            local pos = centerPos + Vector3.new((x-(side+1)/2)*spacing, 0, (y-(side+1)/2)*spacing)
+            local clone = safeClone(template)
+            if clone then placeCloneAt(clone, pos) end
             idx = idx + 1
         end
         if idx >= n then break end
     end
 end
 
--- cleanup
-local function clearAll()
-    for inst,_ in pairs(spawned) do
-        pcall(function() inst:Destroy() end)
-        spawned[inst] = nil
+-- Create a semi-transparent preview model (destroy previous)
+local function makePreview(template)
+    if previewInstance and previewInstance.Parent then
+        pcall(function() previewInstance:Destroy() end)
+        previewInstance = nil
     end
-    -- also clear folder children if any remain
-    for _,c in ipairs(localFolder:GetChildren()) do
-        pcall(function() c:Destroy() end)
+    if not template then return end
+    local clone = safeClone(template)
+    if not clone then return end
+    -- make transparent / ghost
+    for _,d in ipairs(clone:GetDescendants()) do
+        if d:IsA("BasePart") then
+            d.Transparency = PREVIEW_TRANSPARENCY
+            d.CanCollide = false
+        end
     end
-    spawned = {}
+    clone.Name = "PreviewModel"
+    clone.Parent = player:WaitForChild("PlayerGui") -- keep it away from workspace until positioned
+    previewInstance = clone
 end
 
--- minimal bob animation (applies to spawned set)
-local animate = true
-local amplitude = 0.35
-local speed = 1.1
-local t = 0
-RunService.RenderStepped:Connect(function(dt)
-    if not animate then return end
-    t = t + dt * speed
-    for inst,_ in pairs(spawned) do
-        if inst and inst.PrimaryPart then
-            local basePos = inst.PrimaryPart.Position
-            -- small per-instance time offset
-            local offset = (math.sin(t + (inst:GetDebugId() % 10)) * amplitude)
-            local cf = inst.PrimaryPart.CFrame
-            inst:SetPrimaryPartCFrame(CFrame.new(basePos.X, basePos.Y + offset, basePos.Z) * CFrame.Angles(0, math.rad(8 * t), 0))
+-- Position preview at mouse.Hit when in preview mode
+RunService.RenderStepped:Connect(function()
+    if previewInstance and previewInstance.Parent and mouse and mouse.Hit then
+        local hit = mouse.Hit.p
+        if previewInstance.PrimaryPart then
+            previewInstance:SetPrimaryPartCFrame(CFrame.new(hit) * CFrame.Angles(0, math.rad(45), 0))
+        else
+            local root = previewInstance:FindFirstChildWhichIsA("BasePart", true)
+            if root then root.Position = hit end
         end
     end
 end)
 
--- Quick UI: dropdown + spawn + clear
-local function makeGui()
-    local gui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
-    gui.Name = "LocalBrainrotSpawnerGUI"
+-- Click to place single model when placeMode is true
+mouse.Button1Down:Connect(function()
+    if not placeMode then return end
+    if not selectedName then
+        warn("No template selected for placement.")
+        return
+    end
+    local hitPos
+    if mouse.Target then
+        hitPos = mouse.Hit.p
+    else
+        -- if no target, place in front of camera
+        hitPos = camera.CFrame.Position + camera.CFrame.LookVector * 10
+    end
+    local template = MODELS_FOLDER:FindFirstChild(selectedName)
+    if not template then warn("Selected template not found: "..tostring(selectedName)) return end
+    local clone = safeClone(template)
+    if clone then placeCloneAt(clone, hitPos) end
+end)
+
+-- UI: small panel with list, preview, spawn 67, spawn grid at camera, place mode toggle, clear
+local function buildUI()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "LocalBrainrotSpawnerUI"
     gui.ResetOnSpawn = false
+    gui.Parent = player:WaitForChild("PlayerGui")
 
-    local frame = Instance.new("Frame", gui)
-    frame.Size = UDim2.new(0,320,0,84)
-    frame.Position = UDim2.new(0,8,0,8)
-    frame.BackgroundTransparency = 0.2
-    frame.BackgroundColor3 = Color3.fromRGB(20,20,22)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0,360,0,420)
+    frame.Position = UDim2.new(0,12,0,12)
+    frame.BackgroundColor3 = Color3.fromRGB(22,22,24)
     frame.BorderSizePixel = 0
+    frame.Parent = gui
 
-    local label = Instance.new("TextLabel", frame)
-    label.Size = UDim2.new(1, -12, 0, 20)
-    label.Position = UDim2.new(0,6,0,6)
-    label.BackgroundTransparency = 1
-    label.Text = "Local Spawner (client-only)"
-    label.TextColor3 = Color3.fromRGB(230,230,230)
-    label.Font = Enum.Font.SourceSansBold
-    label.TextSize = 14
-    label.TextXAlignment = Enum.TextXAlignment.Left
+    local title = Instance.new("TextLabel", frame)
+    title.Size = UDim2.new(1, -12, 0, 24)
+    title.Position = UDim2.new(0,6,0,6)
+    title.BackgroundTransparency = 1
+    title.Text = "Local Brainrot Spawner (client-only)"
+    title.TextColor3 = Color3.fromRGB(230,230,230)
+    title.Font = Enum.Font.SourceSansBold
+    title.TextSize = 15
 
-    local dd = Instance.new("TextBox", frame)
-    dd.Size = UDim2.new(0,200,0,28)
-    dd.Position = UDim2.new(0,6,0,28)
-    dd.PlaceholderText = "Template name (or leave blank to rotate templates)"
-    dd.ClearTextOnFocus = false
+    -- List header
+    local listLabel = Instance.new("TextLabel", frame)
+    listLabel.Size = UDim2.new(0,180,0,18)
+    listLabel.Position = UDim2.new(0,6,0,34)
+    listLabel.BackgroundTransparency = 1
+    listLabel.Text = "Templates"
+    listLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    listLabel.Font = Enum.Font.SourceSans
+    listLabel.TextSize = 14
+    listLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-    local spawnBtn = Instance.new("TextButton", frame)
-    spawnBtn.Size = UDim2.new(0,90,0,28)
-    spawnBtn.Position = UDim2.new(0,214,0,28)
-    spawnBtn.Text = "Spawn 67"
-    spawnBtn.Font = Enum.Font.SourceSansBold
-    spawnBtn.TextSize = 14
+    -- Templates scrolling list
+    local listFrame = Instance.new("ScrollingFrame", frame)
+    listFrame.Position = UDim2.new(0,6,0,54)
+    listFrame.Size = UDim2.new(0,180,0,300)
+    listFrame.CanvasSize = UDim2.new(0,0,0,0)
+    listFrame.BackgroundColor3 = Color3.fromRGB(28,28,30)
+    listFrame.BorderSizePixel = 0
+    listFrame.ScrollBarThickness = 6
 
-    local clearBtn = Instance.new("TextButton", frame)
-    clearBtn.Size = UDim2.new(0,90,0,28)
-    clearBtn.Position = UDim2.new(0,214,0,6)
-    clearBtn.Text = "Clear"
-    clearBtn.Font = Enum.Font.SourceSansBold
-    clearBtn.TextSize = 14
+    local listLayout = Instance.new("UIListLayout", listFrame)
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Padding = UDim.new(0,4)
 
-    spawnBtn.Activated:Connect(function()
-        local name = dd.Text
-        clearAll()
-        -- if name provided and matches a template, spawn 67 copies of that one; else rotate templates
-        if name and name ~= "" then
-            local template = ANIMALS_FOLDER:FindFirstChild(name)
-            if template then
-                -- spawn 67 of the single template
-                local center = camera.CFrame.Position + camera.CFrame.LookVector * 10
-                local side = math.ceil(math.sqrt(TOTAL_TO_SPAWN))
-                local idx = 0
-                for y = 1, side do
-                    for x = 1, side do
-                        if idx >= TOTAL_TO_SPAWN then break end
-                        local pos = center + Vector3.new((x-(side+1)/2)*SPACING,0,(y-(side+1)/2)*SPACING)
-                        local c = safeClone(template)
-                        if c then placeClone(c, pos) end
-                        idx = idx + 1
-                    end
-                    if idx >= TOTAL_TO_SPAWN then break end
+    -- Right side controls
+    local rightX = 196
+    local previewLabel = Instance.new("TextLabel", frame)
+    previewLabel.Size = UDim2.new(0,158,0,18)
+    previewLabel.Position = UDim2.new(0,rightX,0,34)
+    previewLabel.BackgroundTransparency = 1
+    previewLabel.Text = "Preview / Controls"
+    previewLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    previewLabel.Font = Enum.Font.SourceSans
+    previewLabel.TextSize = 14
+    previewLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local previewBox = Instance.new("Frame", frame)
+    previewBox.Size = UDim2.new(0,158,0,220)
+    previewBox.Position = UDim2.new(0,rightX,0,54)
+    previewBox.BackgroundColor3 = Color3.fromRGB(30,30,33)
+    previewBox.BorderSizePixel = 0
+
+    -- Buttons
+    local function newButton(text, posY)
+        local b = Instance.new("TextButton", frame)
+        b.Size = UDim2.new(0,92,0,28)
+        b.Position = UDim2.new(0,rightX,0,posY)
+        b.Text = text
+        b.Font = Enum.Font.SourceSansBold
+        b.TextSize = 14
+        b.BackgroundColor3 = Color3.fromRGB(60,60,64)
+        return b
+    end
+
+    local spawn67Btn = newButton("Spawn 67", 284)
+    local gridBtn = newButton("Spawn Grid", 320)
+    local placeToggleBtn = newButton("Place: Off", 356)
+    local clearBtn = newButton("Clear", 392)
+
+    -- Populate template list
+    local templates = MODELS_FOLDER:GetChildren()
+    table.sort(templates, function(a,b) return a.Name:lower() < b.Name:lower() end)
+    for _,tmpl in ipairs(templates) do
+        local entry = Instance.new("TextButton")
+        entry.Size = UDim2.new(1, -12, 0, 28)
+        entry.Text = tmpl.Name
+        entry.BackgroundColor3 = Color3.fromRGB(40,40,44)
+        entry.Font = Enum.Font.SourceSans
+        entry.TextSize = 14
+        entry.TextColor3 = Color3.fromRGB(220,220,220)
+        entry.Parent = listFrame
+
+        entry.MouseButton1Click:Connect(function()
+            -- select
+            selectedTemplate = tmpl
+            selectedName = tmpl.Name
+            -- highlight selection
+            for _,c in ipairs(listFrame:GetChildren()) do
+                if c:IsA("TextButton") then
+                    c.BackgroundColor3 = Color3.fromRGB(40,40,44)
                 end
-                return
-            else
-                warn("Template '"..name.."' not found in Models.Animals. Spawning mixed templates instead.")
             end
-        end
-        spawnN(TOTAL_TO_SPAWN)
+            entry.BackgroundColor3 = Color3.fromRGB(80,110,80)
+            -- make preview
+            makePreview(tmpl)
+        end)
+    end
+
+    -- adjust canvas size after populating
+    RunService.Heartbeat:Wait()
+    local count = 0
+    for _,c in ipairs(listFrame:GetChildren()) do if c:IsA("TextButton") then count = count + 1 end end
+    listFrame.CanvasSize = UDim2.new(0,0,0, count*32 + 8)
+
+    -- Button behaviors
+    spawn67Btn.MouseButton1Click:Connect(function()
+        clearAll()
+        spawnGrid(DEFAULT_TOTAL, camera.CFrame.Position + camera.CFrame.LookVector * 10, GRID_SPACING)
     end)
 
-    clearBtn.Activated:Connect(function() clearAll() end)
+    gridBtn.MouseButton1Click:Connect(function()
+        clearAll()
+        spawnGrid(25, camera.CFrame.Position + camera.CFrame.LookVector * 8, GRID_SPACING) -- smaller grid preview
+    end)
+
+    placeToggleBtn.MouseButton1Click:Connect(function()
+        placeMode = not placeMode
+        placeToggleBtn.Text = "Place: " .. (placeMode and "On" or "Off")
+        -- optionally show preview when turning place on
+        if placeMode and selectedTemplate then
+            makePreview(selectedTemplate)
+        else
+            if previewInstance and previewInstance.Parent then
+                pcall(function() previewInstance:Destroy() end)
+                previewInstance = nil
+            end
+        end
+    end)
+
+    clearBtn.MouseButton1Click:Connect(function()
+        clearAll()
+    end)
+
+    -- Quick keyboard toggles
+    UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        if input.KeyCode == Enum.KeyCode.B then
+            clearAll()
+            spawnGrid(DEFAULT_TOTAL, camera.CFrame.Position + camera.CFrame.LookVector * 10, GRID_SPACING)
+        elseif input.KeyCode == Enum.KeyCode.R then
+            clearAll()
+        elseif input.KeyCode == Enum.KeyCode.P then
+            -- toggle place mode
+            placeMode = not placeMode
+            placeToggleBtn.Text = "Place: " .. (placeMode and "On" or "Off")
+            if placeMode and selectedTemplate then makePreview(selectedTemplate) end
+        end
+    end)
+
+    -- close GUI with Ctrl+F
+    UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        if input.KeyCode == Enum.KeyCode.F and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)) then
+            gui.Enabled = not gui.Enabled
+        end
+    end)
 end
 
-pcall(makeGui)
-print("Safe local spawner ready. Use the GUI or call spawnN(n)/clearAll() from console.")
+-- Build UI
+pcall(buildUI)
+
+print("Local UI spawner ready. Select a template, use Place mode to click-to-place, or Spawn 67 to create client-only models.")
