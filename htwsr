@@ -1,17 +1,16 @@
--- LocalBrainrotSpawner.lua  (LocalScript -> StarterPlayerScripts)
+-- LocalBrainrotSpawner67.lua  (LocalScript -> StarterPlayerScripts)
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 -- Config
-local ANIMALS_FOLDER = ReplicatedStorage:WaitForChild("Animals") -- expects ReplicatedStorage.Animals
-local PLOTS_PARENT = workspace:FindFirstChild("plots") or workspace:FindFirstChild("Plots") or workspace -- tries common names; falls back to workspace
-local LOCAL_FOLDER_NAME = "LocalClientBrainrots" -- where client clones go
+local ANIMALS_FOLDER = ReplicatedStorage:WaitForChild("Models"):WaitForChild("Animals")
+local PLOTS_PARENT = workspace:FindFirstChild("Plots") or workspace:FindFirstChild("plots") or workspace
+local LOCAL_FOLDER_NAME = "LocalClientBrainrots"
+local TOTAL_TO_SPAWN = 67
 local DEFAULT_SCALE = 1
+local SPACING = 3 -- space between brainrots
 
 -- Create local folder
 local localFolder = workspace:FindFirstChild(LOCAL_FOLDER_NAME)
@@ -21,63 +20,24 @@ if not localFolder then
     localFolder.Parent = workspace
 end
 
--- Internal table to track created models for cleanup/animation (if needed)
 local spawned = {}
 
--- Utility: find template by name (case-insensitive)
-local function findTemplateByName(name)
-    if not name or name == "" then return nil end
-    for _,v in ipairs(ANIMALS_FOLDER:GetChildren()) do
-        if v.Name:lower() == name:lower() then
-            return v
-        end
-    end
-    -- fallback: try direct FindFirstChild
-    return ANIMALS_FOLDER:FindFirstChild(name)
-end
-
--- Utility: clone model safely and parent to localFolder
-local function cloneModelSafe(template)
+local function cloneTemplate(template, position, scale)
     local ok, clone = pcall(function() return template:Clone() end)
     if not ok or not clone then return nil end
+
     clone.Parent = localFolder
-    -- ensure it has a primarypart; try to set automatically
     if not clone.PrimaryPart then
         local primary = clone:FindFirstChildWhichIsA("BasePart", true)
-        if primary then
-            clone.PrimaryPart = primary
-        end
+        if primary then clone.PrimaryPart = primary end
     end
-    -- client-only: anchor parts to avoid unexpected physics
     for _,p in ipairs(clone:GetDescendants()) do
         if p:IsA("BasePart") then
             p.Anchored = true
             p.CanCollide = false
         end
     end
-    return clone
-end
-
--- Main spawn function
--- name: template name in ReplicatedStorage.Animals
--- position: Vector3 (optional) - if nil, spawns in front of camera
--- scale: number (optional)
-local function spawnBrainrot(name, position, scale)
-    scale = scale or DEFAULT_SCALE
-    local template = findTemplateByName(name)
-    if not template then
-        warn("Brainrot template not found: "..tostring(name))
-        return nil
-    end
-
-    local clone = cloneModelSafe(template)
-    if not clone then
-        warn("Failed to clone template: "..tostring(name))
-        return nil
-    end
-
-    -- scale model parts if requested (non-destructive, client-only)
-    if scale and type(scale) == "number" and math.abs(scale - 1) > 0.0001 then
+    if scale and type(scale)=="number" then
         for _,p in ipairs(clone:GetDescendants()) do
             if p:IsA("BasePart") then
                 p.Size = p.Size * scale
@@ -85,172 +45,63 @@ local function spawnBrainrot(name, position, scale)
         end
     end
 
-    -- decide position
-    local pos = position
-    if not pos then
-        pos = camera.CFrame.Position + camera.CFrame.LookVector * 6
-    end
-
-    -- position clone
     if clone.PrimaryPart then
-        clone:SetPrimaryPartCFrame(CFrame.new(pos) * CFrame.Angles(0, math.rad(math.random()*360), 0))
+        clone:SetPrimaryPartCFrame(CFrame.new(position) * CFrame.Angles(0, math.rad(math.random()*360), 0))
     else
-        -- fallback: try to position first BasePart
         local root = clone:FindFirstChildWhichIsA("BasePart", true)
-        if root then
-            root.Position = pos
-        end
+        if root then root.Position = position end
     end
 
-    -- try to parent into workspace.plots if it exists (client side)
-    -- prefer exact "plots" or "Plots" folders; otherwise leave in localFolder (already parented)
-    local targetParent = nil
-    if workspace:FindFirstChild("plots") then targetParent = workspace.plots
-    elseif workspace:FindFirstChild("Plots") then targetParent = workspace.Plots end
-    if targetParent then
-        clone.Parent = targetParent
-    else
-        -- keep in localFolder, which is in workspace
-        clone.Parent = localFolder
+    -- parent into workspace.Plots if exists
+    if PLOTS_PARENT then
+        clone.Parent = PLOTS_PARENT
     end
 
-    -- name uniquely
-    clone.Name = (clone.Name or "Brainrot") .. "_local_" .. tostring(math.floor(tick()*1000))
-
-    -- track it
+    clone.Name = (clone.Name or "Brainrot").."_local_"..tostring(math.floor(tick()*1000))
     spawned[clone] = true
-
     return clone
 end
 
--- Convenience: spawn multiple in an area (grid)
-local function spawnMultiple(name, count, centerPos, spacing, scale)
-    count = math.max(1, math.floor(count or 1))
-    spacing = spacing or 3
-    centerPos = centerPos or (camera.CFrame.Position + camera.CFrame.LookVector * 8)
-    -- arrange in a square-ish grid
+-- Spawn multiple brainrots in grid
+local function spawnMultipleBrainrots(count)
+    local templates = ANIMALS_FOLDER:GetChildren()
+    if #templates == 0 then warn("No templates found in ReplicatedStorage.Models.Animals") return end
+    local center = camera.CFrame.Position + camera.CFrame.LookVector*8
     local side = math.ceil(math.sqrt(count))
-    local created = {}
     local idx = 0
     for y = 1, side do
         for x = 1, side do
             if idx >= count then break end
-            local offset = Vector3.new((x - (side+1)/2) * spacing, 0, (y - (side+1)/2) * spacing)
-            local pos = centerPos + offset
-            local c = spawnBrainrot(name, pos, scale)
-            if c then table.insert(created, c) end
+            local template = templates[((idx)%#templates)+1]
+            local offset = Vector3.new((x-(side+1)/2)*SPACING,0,(y-(side+1)/2)*SPACING)
+            local pos = center + offset
+            cloneTemplate(template, pos, DEFAULT_SCALE)
             idx = idx + 1
         end
         if idx >= count then break end
     end
-    return created
 end
 
--- Cleanup: remove all local spawned brainrots
-local function clearLocalBrainrots()
+-- Clear local spawns
+local function clearBrainrots()
     for obj,_ in pairs(spawned) do
         if obj and obj.Parent then
             pcall(function() obj:Destroy() end)
         end
         spawned[obj] = nil
     end
-    -- also clear any models still in localFolder
-    for _,c in ipairs(localFolder:GetChildren()) do
-        pcall(function() c:Destroy() end)
-    end
-    spawned = {}
 end
 
--- Chat command: /spawnbrain <name> [count] [scale]
-player.Chatted:Connect(function(msg)
-    local tokens = {}
-    for t in msg:gmatch("%S+") do table.insert(tokens, t) end
-    if #tokens >= 1 and tokens[1]:lower() == "/spawnbrain" then
-        local name = tokens[2] or ""
-        if name == "" then
-            player:Kick("Usage: /spawnbrain <templateName> [count] [scale]") -- optional: or just warn
-            return
-        end
-        local count = tonumber(tokens[3]) or 1
-        local scale = tonumber(tokens[4]) or DEFAULT_SCALE
-        if count <= 1 then
-            spawnBrainrot(name, nil, scale)
-        else
-            spawnMultiple(name, count, nil, 3, scale)
-        end
-    elseif #tokens >= 1 and tokens[1]:lower() == "/clearbrains" then
-        clearLocalBrainrots()
-    end
-end)
-
--- Keybinds:
--- B -> spawn lastUsedName or "Brainrot" if unknown (single)
--- Shift+B -> spawn 4 of lastUsedName
--- R -> clear local spawns
-local lastUsedName = nil
-
-UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
+-- Keybinds
+local UserInputService = game:GetService("UserInputService")
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
     if input.KeyCode == Enum.KeyCode.B then
-        local isShift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
-        local name = lastUsedName or (ANIMALS_FOLDER:GetChildren()[1] and ANIMALS_FOLDER:GetChildren()[1].Name) or ""
-        if name == "" then
-            warn("No templates found in ReplicatedStorage.Animals")
-            return
-        end
-        if isShift then
-            spawnMultiple(name, 4, camera.CFrame.Position + camera.CFrame.LookVector * 8, 3, DEFAULT_SCALE)
-        else
-            spawnBrainrot(name, nil, DEFAULT_SCALE)
-        end
+        spawnMultipleBrainrots(TOTAL_TO_SPAWN)
     elseif input.KeyCode == Enum.KeyCode.R then
-        clearLocalBrainrots()
+        clearBrainrots()
     end
 end)
 
--- Small helper: attempt to set lastUsedName automatically to first template
-local first = ANIMALS_FOLDER:GetChildren()[1]
-if first then lastUsedName = first.Name end
-
--- Optional: quick UI prompt (minimal) to set name without editing code
--- Only create if PlayerGui exists
-local function createQuickGui()
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "BrainrotQuickSpawnGui"
-    gui.ResetOnSpawn = false
-    gui.Parent = player:WaitForChild("PlayerGui")
-
-    local frame = Instance.new("Frame", gui)
-    frame.Size = UDim2.new(0,260,0,40)
-    frame.Position = UDim2.new(0,10,0,10)
-    frame.BackgroundTransparency = 0.25
-    frame.BackgroundColor3 = Color3.fromRGB(20,20,22)
-    frame.BorderSizePixel = 0
-
-    local box = Instance.new("TextBox", frame)
-    box.Size = UDim2.new(0,160,0,28)
-    box.Position = UDim2.new(0,8,0,6)
-    box.PlaceholderText = "template name (case sensitive)"
-    box.ClearTextOnFocus = false
-
-    local spawnBtn = Instance.new("TextButton", frame)
-    spawnBtn.Size = UDim2.new(0,80,0,28)
-    spawnBtn.Position = UDim2.new(0,172,0,6)
-    spawnBtn.Text = "Spawn"
-    spawnBtn.Font = Enum.Font.SourceSansBold
-    spawnBtn.TextSize = 14
-
-    spawnBtn.Activated:Connect(function()
-        local nm = box.Text
-        if nm and nm ~= "" then
-            lastUsedName = nm
-            spawnBrainrot(nm, camera.CFrame.Position + camera.CFrame.LookVector*6, DEFAULT_SCALE)
-        end
-    end)
-end
-
--- Create quick GUI
-pcall(createQuickGui)
-
-print("Local Brainrot Spawner loaded. Use /spawnbrain <name> [count] [scale], press B to spawn, Shift+B for multiple, R to clear.")
+print("Local brainrot spawner loaded. Press B to spawn 67 brainrots client-side. Press R to clear.")
 
