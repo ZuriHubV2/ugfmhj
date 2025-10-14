@@ -1,39 +1,89 @@
--- LocalBrainrotPodiumSpawner.lua
+-- ClientPlotPodiumSpawner.lua (LocalScript -> StarterPlayerScripts)
+-- Client-only. Finds your plot, reads AnimalPodiums, spawns matching models from ReplicatedStorage.Models.Animals
+-- No server-side calls. Safe for local testing/visuals only.
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
 -- Config
-local ANIMALS_FOLDER = ReplicatedStorage:FindFirstChild("Models") and ReplicatedStorage.Models:FindFirstChild("Animals")
-if not ANIMALS_FOLDER then
+local MODELS_FOLDER = ReplicatedStorage:FindFirstChild("Models") and ReplicatedStorage.Models:FindFirstChild("Animals")
+if not MODELS_FOLDER then
     warn("ReplicatedStorage.Models.Animals not found. Aborting.")
     return
 end
+local PLOTS_PARENT = workspace:FindFirstChild("Plots") or workspace:FindFirstChild("plots")
+if not PLOTS_PARENT then
+    warn("workspace.Plots not found. Aborting.")
+    return
+end
 
--- Find your plot dynamically
-local function getMyPlot()
-    local plotsFolder = workspace:FindFirstChild("Plots") or workspace:FindFirstChild("plots")
-    if not plotsFolder then return nil end
-    for _, plot in ipairs(plotsFolder:GetChildren()) do
-        local label = plot:FindFirstChild("PlotSign")
-            and plot.PlotSign:FindFirstChild("SurfaceGui")
-            and plot.PlotSign.SurfaceGui:FindFirstChild("Frame")
-            and plot.PlotSign.SurfaceGui.Frame:FindFirstChild("TextLabel")
-        if label and label.Text:find(player.DisplayName) then
-            return plot
+local LOCAL_FOLDER_NAME = "XwareLocalBrainrots" -- local folder inside your plot
+local PREVIEW_TRANSPARENCY = 0.55
+
+-- Utility: find the player's plot by matching the PlotSign SurfaceGui TextLabel to player.DisplayName
+local function findMyPlot()
+    for _, plot in ipairs(PLOTS_PARENT:GetChildren()) do
+        if not plot:IsA("BasePart") then -- plot is usually a Model
+            local success, label = pcall(function()
+                return plot:FindFirstChild("PlotSign") 
+                    and plot.PlotSign:FindFirstChild("SurfaceGui")
+                    and plot.PlotSign.SurfaceGui:FindFirstChild("Frame")
+                    and plot.PlotSign.SurfaceGui.Frame:FindFirstChild("TextLabel")
+            end)
+            if success and label and label.Text and tostring(label.Text):find(player.DisplayName, 1, true) then
+                return plot
+            end
         end
     end
     return nil
 end
 
--- Safe clone
+-- Find the spawn CFrame on a podium robustly (handles common naming variations)
+local function findPodiumSpawnCFrame(podium)
+    if not podium then return nil end
+    -- common path: podium.Base.Spawn (then Attachment or CFrame on Spawn)
+    local base = podium:FindFirstChild("Base") or podium:FindFirstChildWhichIsA("BasePart")
+    if base then
+        local spawn = base:FindFirstChild("Spawn") or base:FindFirstChildWhichIsA("Model") or base:FindFirstChildWhichIsA("Folder")
+        if spawn then
+            -- try Attachment
+            local attach = spawn:FindFirstChild("Attachment") or spawn:FindFirstChildWhichIsA("Attachment")
+            if attach and attach:IsA("Attachment") then
+                return attach.WorldCFrame
+            end
+            -- try a named Part inside spawn
+            local part = spawn:FindFirstChildWhichIsA("BasePart")
+            if part then
+                return part.CFrame
+            end
+            -- if spawn itself is a BasePart
+            if spawn:IsA("BasePart") then
+                return spawn.CFrame
+            end
+        end
+    end
+    -- fallback: podium.PrimaryPart or first BasePart
+    local primary = podium.PrimaryPart or podium:FindFirstChildWhichIsA("BasePart", true)
+    if primary then return primary.CFrame end
+    return nil
+end
+
+-- Safe clone helper: removes scripts, anchors parts, disables collisions
 local function safeClone(template)
+    if not template then return nil end
     local ok, clone = pcall(function() return template:Clone() end)
     if not ok or not clone then return nil end
+
+    -- set PrimaryPart if missing
     if not clone.PrimaryPart then
         local prim = clone:FindFirstChildWhichIsA("BasePart", true)
         if prim then clone.PrimaryPart = prim end
     end
+
+    -- sanitize
     for _, d in ipairs(clone:GetDescendants()) do
         if d:IsA("BasePart") then
             d.Anchored = true
@@ -45,72 +95,217 @@ local function safeClone(template)
     return clone
 end
 
--- Spawn brainrots in their podiums
-local function spawnPodiums()
-    local plot = getMyPlot()
-    if not plot then
-        warn("Could not find your plot")
-        return
+-- Create / get local folder inside the plot to keep client-only models organized
+local function getLocalFolderForPlot(plot)
+    if not plot then return nil end
+    local folder = plot:FindFirstChild(LOCAL_FOLDER_NAME)
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = LOCAL_FOLDER_NAME
+        folder.Parent = plot
     end
+    return folder
+end
 
-    -- Local folder to hold client-side brainrots
-    local localFolder = plot:FindFirstChild("LocalBrainrots")
-    if not localFolder then
-        localFolder = Instance.new("Folder")
-        localFolder.Name = "LocalBrainrots"
-        localFolder.Parent = plot
-    else
-        -- Clear previous
-        for _, obj in ipairs(localFolder:GetChildren()) do
-            pcall(function() obj:Destroy() end)
+-- Check if podium already has a model (server-side real model or our local clone). We consider a child that is not the podium structure itself.
+local function podiumHasOccupied(podium)
+    for _, child in ipairs(podium:GetChildren()) do
+        if child.Name:find("_local_") or child:IsA("Model") and child.PrimaryPart and not child:FindFirstChild("Base") then
+            -- heuristic: ignore expected podium internals; detect spawned models by _local_ suffix or by being a model with parts
+            return true
         end
     end
-
-    local podiumsFolder = plot:FindFirstChild("AnimalPodiums")
-    if not podiumsFolder then
-        warn("No AnimalPodiums found in your plot")
-        return
+    -- also check attachments under podium.Base.Spawn for existing children (overhead)
+    local attach = podium:FindFirstChild("Base") and podium.Base:FindFirstChild("Spawn") and podium.Base.Spawn:FindFirstChild("Attachment")
+    if attach and #attach:GetChildren() > 0 then
+        -- often games put overhead markers here; we will still attempt spawn below only if nothing obvious
+        return false
     end
+    return false
+end
 
+-- Build a mapping of podium -> displayName (reads the AnimalOverhead.DisplayName.Text where present)
+local function scanPodiums(plot)
+    local results = {} -- { podiumInstance = displayName (string) }
+    if not plot then return results end
+    local podiumsFolder = plot:FindFirstChild("AnimalPodiums")
+    if not podiumsFolder then return results end
     for _, podium in ipairs(podiumsFolder:GetChildren()) do
-        local spawnAttachment = podium:FindFirstChild("Base") and podium.Base:FindFirstChild("Spawn") and podium.Base.Spawn:FindFirstChild("Attachment")
-        if spawnAttachment then
-            local overhead = spawnAttachment:FindFirstChild("AnimalOverhead")
-            local displayName = overhead and overhead:FindFirstChild("DisplayName") and overhead.DisplayName.Text
-            if displayName then
-                -- Find matching brainrot template in ReplicatedStorage.Models.Animals
-                local template = ANIMALS_FOLDER:FindFirstChild(displayName)
-                if template then
-                    local clone = safeClone(template)
-                    if clone and clone.PrimaryPart then
-                        clone:SetPrimaryPartCFrame(spawnAttachment.CFrame)
-                        clone.Parent = localFolder
-                    end
-                else
-                    warn("Template not found for brainrot:", displayName)
+        if podium and podium:IsA("Model") or podium:IsA("Folder") then
+            -- get the attachment with AnimalOverhead.DisplayName
+            local spawnAttach = podium:FindFirstChild("Base") and podium.Base:FindFirstChild("Spawn") and podium.Base.Spawn:FindFirstChild("Attachment")
+            local displayName
+            if spawnAttach then
+                local overhead = spawnAttach:FindFirstChild("AnimalOverhead")
+                if overhead and overhead:FindFirstChild("DisplayName") and overhead.DisplayName:IsA("TextLabel") then
+                    displayName = overhead.DisplayName.Text
                 end
             end
+            -- fallback: try podium.Name or a child naming convention (rare)
+            if not displayName then
+                -- sometimes podium may have a child called "Animal" or "Display"
+                local maybe = podium:FindFirstChildWhichIsA("Model", true)
+                if maybe and maybe.Name then displayName = maybe.Name end
+            end
+            if displayName and displayName ~= "" then
+                results[podium] = displayName
+            end
         end
+    end
+    return results
+end
+
+-- Spawn matching models into podiums: only clones that match the podium DisplayName and where there's no existing model
+local function spawnIntoPodiums()
+    local plot = findMyPlot()
+    if not plot then
+        warn("Could not find your plot (PlotSign not matched).")
+        return
+    end
+    local localFolder = getLocalFolderForPlot(plot)
+    -- clear old local clones inside that folder (we'll replace fresh)
+    for _,c in ipairs(localFolder:GetChildren()) do
+        pcall(function() c:Destroy() end)
+    end
+
+    local mapping = scanPodiums(plot)
+    if not next(mapping) then
+        warn("No podiums with display names found in your plot.")
+        return
+    end
+
+    local spawnedCount = 0
+    for podium, displayName in pairs(mapping) do
+        -- ensure we only spawn if there is a matching template and podium isn't already occupied
+        if not podiumHasOccupied(podium) then
+            local template = MODELS_FOLDER:FindFirstChild(displayName) or MODELS_FOLDER:FindFirstChild(displayName:match("^(.-)%s*$") or "")
+            if template then
+                local spawnCFrame = findPodiumSpawnCFrame(podium)
+                if not spawnCFrame then
+                    -- try to place at podium.PrimaryPart or vector offset from podium model
+                    local fallbackPart = podium.PrimaryPart or podium:FindFirstChildWhichIsA("BasePart", true)
+                    spawnCFrame = fallbackPart and fallbackPart.CFrame or (podium:GetModelCFrame() or CFrame.new(0,5,0))
+                end
+                local clone = safeClone(template)
+                if clone then
+                    -- position clone so it sits nicely on podium spawn; small upward offset to avoid Z-fighting
+                    if clone.PrimaryPart then
+                        clone:SetPrimaryPartCFrame(spawnCFrame * CFrame.new(0, 0.5, 0))
+                    else
+                        local root = clone:FindFirstChildWhichIsA("BasePart", true)
+                        if root then root.CFrame = spawnCFrame * CFrame.new(0, 0.5, 0) end
+                    end
+                    clone.Parent = localFolder
+                    clone.Name = (clone.Name or "Brainrot") .. "_local_" .. tostring(math.floor(tick()*1000))
+                    spawnedCount = spawnedCount + 1
+                else
+                    warn("Failed to clone template for", displayName)
+                end
+            else
+                -- template missing in ReplicatedStorage; keep note
+                warn(("No template for podium displayName '%s'"):format(tostring(displayName)))
+            end
+        else
+            -- podium appears occupied; skip it
+            -- (we avoid overwriting server models or existing local clones)
+        end
+    end
+
+    print(("Spawned %d client-only brainrot(s) into your plot."):format(spawnedCount))
+end
+
+-- Clear local clones in your plot
+local function clearLocalInPlot()
+    local plot = findMyPlot()
+    if not plot then return end
+    local folder = plot:FindFirstChild(LOCAL_FOLDER_NAME)
+    if not folder then return end
+    for _, c in ipairs(folder:GetChildren()) do
+        pcall(function() c:Destroy() end)
     end
 end
 
--- Keybinds
-local UserInputService = game:GetService("UserInputService")
-UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
+-- Small UI: Spawn / Clear buttons and status
+local function makeSimpleUI()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "PodiumSpawnerUI"
+    gui.ResetOnSpawn = false
+    gui.Parent = player:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame", gui)
+    frame.Size = UDim2.new(0,240,0,86)
+    frame.Position = UDim2.new(0,8,0,8)
+    frame.BackgroundColor3 = Color3.fromRGB(24,24,26)
+    frame.BorderSizePixel = 0
+
+    local title = Instance.new("TextLabel", frame)
+    title.Size = UDim2.new(1,-16,0,20)
+    title.Position = UDim2.new(0,8,0,6)
+    title.BackgroundTransparency = 1
+    title.Text = "Podium Spawner (client-only)"
+    title.Font = Enum.Font.SourceSansBold
+    title.TextSize = 14
+    title.TextColor3 = Color3.fromRGB(230,230,230)
+
+    local spawnBtn = Instance.new("TextButton", frame)
+    spawnBtn.Size = UDim2.new(0,100,0,28)
+    spawnBtn.Position = UDim2.new(0,8,0,30)
+    spawnBtn.Text = "Spawn Podiums"
+    spawnBtn.Font = Enum.Font.SourceSans
+    spawnBtn.TextSize = 14
+
+    local clearBtn = Instance.new("TextButton", frame)
+    clearBtn.Size = UDim2.new(0,100,0,28)
+    clearBtn.Position = UDim2.new(0,124,0,30)
+    clearBtn.Text = "Clear Local"
+    clearBtn.Font = Enum.Font.SourceSans
+    clearBtn.TextSize = 14
+
+    local status = Instance.new("TextLabel", frame)
+    status.Size = UDim2.new(1, -16, 0, 18)
+    status.Position = UDim2.new(0,8,0,62)
+    status.BackgroundTransparency = 1
+    status.TextXAlignment = Enum.TextXAlignment.Left
+    status.Font = Enum.Font.SourceSans
+    status.TextSize = 12
+    status.TextColor3 = Color3.fromRGB(200,200,200)
+    status.Text = "Status: idle"
+
+    spawnBtn.Activated:Connect(function()
+        status.Text = "Status: scanning plot..."
+        spawnIntoPodiums()
+        status.Text = "Status: done"
+    end)
+    clearBtn.Activated:Connect(function()
+        clearLocalInPlot()
+        status.Text = "Status: cleared"
+    end)
+
+    return gui
+end
+
+-- Keybinds convenience
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
     if input.KeyCode == Enum.KeyCode.B then
-        spawnPodiums()
+        spawnIntoPodiums()
     elseif input.KeyCode == Enum.KeyCode.R then
-        local plot = getMyPlot()
-        if plot then
-            local folder = plot:FindFirstChild("LocalBrainrots")
-            if folder then
-                for _, obj in ipairs(folder:GetChildren()) do
-                    pcall(function() obj:Destroy() end)
-                end
-            end
-        end
+        clearLocalInPlot()
     end
 end)
 
-print("Client-side podium spawner loaded. Press B to spawn brainrots in podiums. Press R to clear.")
+-- Auto-run once if plot available; otherwise UI will let you trigger
+local gui = nil
+pcall(function() gui = makeSimpleUI() end)
+
+-- Try auto-spawn after a short delay to allow the game to build plot signs
+spawn(function()
+    wait(1.2)
+    local success, plot = pcall(findMyPlot)
+    if success and plot then
+        -- spawn automatically once to emulate the loader behavior
+        pcall(spawnIntoPodiums)
+    end
+end)
+
+print("ClientPlotPodiumSpawner loaded. Use the UI, press B to spawn, R to clear.")
