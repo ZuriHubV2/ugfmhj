@@ -1,324 +1,256 @@
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
- 
-local Window = Rayfield:CreateWindow({
-   Name = "MHX HUB STEAL A BRAİNROT",
-   Icon = 0,
-   LoadingTitle = "MHX HUB",
-   LoadingSubtitle = "by Sirius",
-   ShowText = "MHX HUB",
-   Theme = "Default",
-   ToggleUIKeybind = "K",
-   DisableRayfieldPrompts = false,
-   DisableBuildWarnings = false,
-   ConfigurationSaving = {
-      Enabled = true,
-      FolderName = "MHX_HUB",
-      FileName = "StealABrainrot"
-   },
-   Discord = {
-      Enabled = false,
-      Invite = "noinvitelink",
-      RememberJoins = true
-   },
-   KeySystem = false -- Key System devre dışı
-})
- 
--- PLAYER Sayfası
-local PlayerTab = Window:CreateTab("Player", 0) -- Oyuncu hileleri için sekme
- 
--- 1) Speed 50 (Toggle)
-local SpeedEnabled = false
-PlayerTab:CreateToggle({
-   Name = "Speed 50",
-   CurrentValue = false,
-   Callback = function(Value)
-      SpeedEnabled = Value
-      local player = game.Players.LocalPlayer
-      local humanoid = player.Character and player.Character:FindFirstChild("Humanoid")
-      if humanoid then
-         if SpeedEnabled then
-            humanoid.WalkSpeed = 50
-            -- Geriye gitme önleme: Hareket vektörünü kontrol et
-            humanoid.StateChanged:Connect(function(oldState, newState)
-               if newState == Enum.HumanoidStateType.Running then
-                  local moveDirection = humanoid.MoveDirection
-                  if moveDirection.Magnitude > 0 then
-                     humanoid.Parent.HumanoidRootPart.Velocity = Vector3.new(moveDirection.X * 50, humanoid.Parent.HumanoidRootPart.Velocity.Y, moveDirection.Z * 50)
-                  end
-               end
-            end)
-         else
-            humanoid.WalkSpeed = 16 -- Varsayılan hız
-         end
-      end
-   end
-})
- 
--- 2) Wall Hack (Toggle)
-local WallHackEnabled = false
-PlayerTab:CreateToggle({
-   Name = "Wall Hack",
-   CurrentValue = false,
-   Callback = function(Value)
-      WallHackEnabled = Value
-      local player = game.Players.LocalPlayer
-      if WallHackEnabled then
-         for _, base in pairs(workspace:GetDescendants()) do
-            if base:IsA("BasePart") and base.CanCollide then
-               base.CanCollide = false -- Duvarlardan geçmeyi sağlar
+-- LocalBrainrotSpawner.lua  (LocalScript -> StarterPlayerScripts)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- Config
+local ANIMALS_FOLDER = ReplicatedStorage:WaitForChild("Animals") -- expects ReplicatedStorage.Animals
+local PLOTS_PARENT = workspace:FindFirstChild("plots") or workspace:FindFirstChild("Plots") or workspace -- tries common names; falls back to workspace
+local LOCAL_FOLDER_NAME = "LocalClientBrainrots" -- where client clones go
+local DEFAULT_SCALE = 1
+
+-- Create local folder
+local localFolder = workspace:FindFirstChild(LOCAL_FOLDER_NAME)
+if not localFolder then
+    localFolder = Instance.new("Folder")
+    localFolder.Name = LOCAL_FOLDER_NAME
+    localFolder.Parent = workspace
+end
+
+-- Internal table to track created models for cleanup/animation (if needed)
+local spawned = {}
+
+-- Utility: find template by name (case-insensitive)
+local function findTemplateByName(name)
+    if not name or name == "" then return nil end
+    for _,v in ipairs(ANIMALS_FOLDER:GetChildren()) do
+        if v.Name:lower() == name:lower() then
+            return v
+        end
+    end
+    -- fallback: try direct FindFirstChild
+    return ANIMALS_FOLDER:FindFirstChild(name)
+end
+
+-- Utility: clone model safely and parent to localFolder
+local function cloneModelSafe(template)
+    local ok, clone = pcall(function() return template:Clone() end)
+    if not ok or not clone then return nil end
+    clone.Parent = localFolder
+    -- ensure it has a primarypart; try to set automatically
+    if not clone.PrimaryPart then
+        local primary = clone:FindFirstChildWhichIsA("BasePart", true)
+        if primary then
+            clone.PrimaryPart = primary
+        end
+    end
+    -- client-only: anchor parts to avoid unexpected physics
+    for _,p in ipairs(clone:GetDescendants()) do
+        if p:IsA("BasePart") then
+            p.Anchored = true
+            p.CanCollide = false
+        end
+    end
+    return clone
+end
+
+-- Main spawn function
+-- name: template name in ReplicatedStorage.Animals
+-- position: Vector3 (optional) - if nil, spawns in front of camera
+-- scale: number (optional)
+local function spawnBrainrot(name, position, scale)
+    scale = scale or DEFAULT_SCALE
+    local template = findTemplateByName(name)
+    if not template then
+        warn("Brainrot template not found: "..tostring(name))
+        return nil
+    end
+
+    local clone = cloneModelSafe(template)
+    if not clone then
+        warn("Failed to clone template: "..tostring(name))
+        return nil
+    end
+
+    -- scale model parts if requested (non-destructive, client-only)
+    if scale and type(scale) == "number" and math.abs(scale - 1) > 0.0001 then
+        for _,p in ipairs(clone:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.Size = p.Size * scale
             end
-         end
-         -- Geriye gitme önleme: Fizik manipülasyonu
-         game:GetService("RunService").Stepped:Connect(function()
-            if WallHackEnabled and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-               local rootPart = player.Character.HumanoidRootPart
-               rootPart.Velocity = Vector3.new(rootPart.Velocity.X, 0, rootPart.Velocity.Z) -- Y ekseninde sıfırlama
-            end
-         end)
-      else
-         for _, base in pairs(workspace:GetDescendants()) do
-            if base:IsA("BasePart") then
-               base.CanCollide = true -- Varsayılan haline getir
-            end
-         end
-      end
-   end
-})
- 
--- 3) Fly (Toggle)
-local FlyEnabled = false
-PlayerTab:CreateToggle({
-   Name = "Fly",
-   CurrentValue = false,
-   Callback = function(Value)
-      FlyEnabled = Value
-      local player = game.Players.LocalPlayer
-      local humanoid = player.Character and player.Character:FindFirstChild("Humanoid")
-      local rootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-      if humanoid and rootPart then
-         if FlyEnabled then
-            local bodyVelocity = Instance.new("BodyVelocity")
-            bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-            bodyVelocity.Velocity = Vector3.new(0, 0, 0)
-            bodyVelocity.Parent = rootPart
-            game:GetService("RunService").RenderStepped:Connect(function()
-               if FlyEnabled then
-                  local cam = workspace.CurrentCamera
-                  local moveDirection = Vector3.new(
-                     (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.D) and 1 or 0) - (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.A) and 1 or 0),
-                     (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.Space) and 1 or 0) - (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.LeftShift) and 1 or 0),
-                     (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.W) and 1 or 0) - (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.S) and 1 or 0)
-                  )
-                  bodyVelocity.Velocity = cam.CFrame:VectorToWorldSpace(moveDirection * 50)
-               end
-            end)
-         else
-            for _, v in pairs(rootPart:GetChildren()) do
-               if v:IsA("BodyVelocity") then
-                  v:Destroy()
-               end
-            end
-         end
-      end
-   end
-})
- 
--- ESP Sayfası
-local ESPTab = Window:CreateTab("ESP", 0) -- ESP hileleri için sekme
- 
--- 1) Player ESP (Toggle)
-local PlayerESPEnabled = false
-PlayerTab:CreateToggle({
-   Name = "Player ESP",
-   CurrentValue = false,
-   Callback = function(Value)
-      PlayerESPEnabled = Value
-      if PlayerESPEnabled then
-         for _, player in pairs(game.Players:GetPlayers()) do
-            if player ~= game.Players.LocalPlayer and player.Character then
-               local highlight = Instance.new("Highlight")
-               highlight.FillColor = Color3.fromRGB(128, 0, 128) -- Mor iç
-               highlight.OutlineColor = Color3.fromRGB(255, 255, 0) -- Sarı dış
-               highlight.Parent = player.Character
-            end
-         end
-         game.Players.PlayerAdded:Connect(function(player)
-            player.CharacterAdded:Connect(function(character)
-               if PlayerESPEnabled then
-                  local highlight = Instance.new("Highlight")
-                  highlight.FillColor = Color3.fromRGB(128, 0, 128)
-                  highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
-                  highlight.Parent = character
-               end
-            end)
-         end)
-      else
-         for _, player in pairs(game.Players:GetPlayers()) do
-            if player.Character then
-               for _, v in pairs(player.Character:GetChildren()) do
-                  if v:IsA("Highlight") then
-                     v:Destroy()
-                  end
-               end
-            end
-         end
-      end
-   end
-})
- 
--- 2) Brainrots ESP (Toggle)
-local BrainrotsESPEnabled = false
-PlayerTab:CreateToggle({
-   Name = "Brainrots ESP",
-   CurrentValue = false,
-   Callback = function(Value)
-      BrainrotsESPEnabled = Value
-      if BrainrotsESPEnabled then
-         -- Brainrot item'larını bul (örnek olarak workspace içindeki item'lar varsayımı)
-         for _, item in pairs(workspace:GetDescendants()) do
-            if item.Name:match("Brainrot") or item.Name:match("Tralelero") or item.Name:match("Saturnita") then -- Örnek item isimleri
-               local highlight = Instance.new("Highlight")
-               highlight.FillColor = Color3.fromRGB(0, 0, 255) -- Mavi iç
-               highlight.OutlineColor = Color3.fromRGB(255, 0, 0) -- Kırmızı dış
-               highlight.Parent = item
-            end
-         end
-      else
-         for _, item in pairs(workspace:GetDescendants()) do
-            for _, v in pairs(item:GetChildren()) do
-               if v:IsA("Highlight") then
-                  v:Destroy()
-               end
-            end
-         end
-      end
-   end
-})
- 
--- Explosions Sayfası
-local ExplosionsTab = Window:CreateTab("Explosions 💥", 0) -- Explosions hileleri için sekme
- 
--- 1) Play Most Valuable Brainrot (Button)
-ExplosionsTab:CreateButton({
-   Name = "Play Most Valuable Brainrot",
-   Callback = function()
-      local player = game.Players.LocalPlayer
-      local mostValuable = nil
-      local highestValue = 0
-      for _, item in pairs(workspace:GetDescendants()) do
-         if item.Name:match("Brainrot") and item:FindFirstChild("Value") then
-            local value = item.Value.Value -- Varsayımsal değer
-            if value > highestValue then
-               highestValue = value
-               mostValuable = item
-            end
-         end
-      end
-      if mostValuable and player.Character then
-         mostValuable.Parent = player.Character -- Item oyuncunun eline geçer
-         -- Baseye ışınlanma
-         local base = workspace:FindFirstChild("Base") -- Varsayımsal base
-         if base then
-            player.Character.HumanoidRootPart.CFrame = base.CFrame
-         end
-      end
-   end
-})
- 
--- 2) Tung Bat All Players (Button)
-ExplosionsTab:CreateButton({
-   Name = "Tung Bat All Players",
-   Callback = function()
-      local player = game.Players.LocalPlayer
-      for _, target in pairs(game.Players:GetPlayers()) do
-         if target ~= player and target.Character then
-            local tool = player.Backpack:FindFirstChild("TungYarasa") or player.Character:FindFirstChild("TungYarasa")
-            if tool then
-               tool:Activate() -- Varsayımsal aktivasyon
-               target.Character.HumanoidRootPart.CFrame = player.Character.HumanoidRootPart.CFrame + Vector3.new(5, 0, 0) -- Yakına ışınla ve vur
-            end
-         end
-      end
-   end
-})
- 
--- 3) Steal Brainrots (Button)
-ExplosionsTab:CreateButton({
-   Name = "Steal Brainrots",
-   Callback = function()
-      local player = game.Players.LocalPlayer
-      local valuableBrainrots = {"Tralelero", "Saturnita", "Balerina Capucina", "Coco Fanto Ele Fanto", "orcalero Orcala", "odin din dun", "Dragons"}
-      for _, item in pairs(workspace:GetDescendants()) do
-         for _, brainrot in pairs(valuableBrainrots) do
-            if item.Name == brainrot then
-               item.Parent = player.Character -- Item oyuncunun eline geçer
-            end
-         end
-      end
-   end
-})
- 
--- 4) Auto Close (Button)
-ExplosionsTab:CreateButton({
-   Name = "Auto Close",
-   Callback = function()
-      local player = game.Players.LocalPlayer
-      local base = workspace:FindFirstChild("Base") -- Varsayımsal base
-      if base and base:FindFirstChild("CloseButton") then
-         wait(27) -- Son 3 saniye kala (varsayımsal 30 saniyelik kapanma süresi)
-         player.Character.HumanoidRootPart.CFrame = base.CloseButton.CFrame
-         fireclickdetector(base.CloseButton:FindFirstChildOfClass("ClickDetector"))
-      end
-   end
-})
- 
--- 5) No Falling (Toggle)
-local NoFallingEnabled = false
-ExplosionsTab:CreateToggle({
-   Name = "No Falling",
-   CurrentValue = false,
-   Callback = function(Value)
-      NoFallingEnabled = Value
-      local player = game.Players.LocalPlayer
-      if NoFallingEnabled and player.Character then
-         local humanoid = player.Character:FindFirstChild("Humanoid")
-         humanoid.StateChanged:Connect(function(oldState, newState)
-            if newState == Enum.HumanoidStateType.FallingDown then
-               humanoid:ChangeState(Enum.HumanoidStateType.Running)
-               -- Brainrot'u baseye ışınla
-               local brainrot = player.Character:FindFirstChildWhichIsA("Tool")
-               if brainrot then
-                  local base = workspace:FindFirstChild("Base")
-                  if base then
-                     brainrot.Parent = base
-                  end
-               end
-            end
-         end)
-      end
-   end
-})
- 
--- 6) Go Base (Button)
-ExplosionsTab:CreateButton({
-   Name = "Go Base",
-   Callback = function()
-      local player = game.Players.LocalPlayer
-      local base = workspace:FindFirstChild("Base") -- Varsayımsal base
-      if base and player.Character then
-         player.Character.HumanoidRootPart.CFrame = base.CFrame
-      end
-   end
-})
- 
--- 7) Laser Block (Button)
-ExplosionsTab:CreateButton({
-   Name = "Laser Block",
-   Callback = function()
-      for _, base in pairs(workspace:GetDescendants()) do
-         if base.Name:match("Laser") then
-            base:Destroy() -- Lazer engellerini sil
-         end
-      end
-   end
-})
+        end
+    end
+
+    -- decide position
+    local pos = position
+    if not pos then
+        pos = camera.CFrame.Position + camera.CFrame.LookVector * 6
+    end
+
+    -- position clone
+    if clone.PrimaryPart then
+        clone:SetPrimaryPartCFrame(CFrame.new(pos) * CFrame.Angles(0, math.rad(math.random()*360), 0))
+    else
+        -- fallback: try to position first BasePart
+        local root = clone:FindFirstChildWhichIsA("BasePart", true)
+        if root then
+            root.Position = pos
+        end
+    end
+
+    -- try to parent into workspace.plots if it exists (client side)
+    -- prefer exact "plots" or "Plots" folders; otherwise leave in localFolder (already parented)
+    local targetParent = nil
+    if workspace:FindFirstChild("plots") then targetParent = workspace.plots
+    elseif workspace:FindFirstChild("Plots") then targetParent = workspace.Plots end
+    if targetParent then
+        clone.Parent = targetParent
+    else
+        -- keep in localFolder, which is in workspace
+        clone.Parent = localFolder
+    end
+
+    -- name uniquely
+    clone.Name = (clone.Name or "Brainrot") .. "_local_" .. tostring(math.floor(tick()*1000))
+
+    -- track it
+    spawned[clone] = true
+
+    return clone
+end
+
+-- Convenience: spawn multiple in an area (grid)
+local function spawnMultiple(name, count, centerPos, spacing, scale)
+    count = math.max(1, math.floor(count or 1))
+    spacing = spacing or 3
+    centerPos = centerPos or (camera.CFrame.Position + camera.CFrame.LookVector * 8)
+    -- arrange in a square-ish grid
+    local side = math.ceil(math.sqrt(count))
+    local created = {}
+    local idx = 0
+    for y = 1, side do
+        for x = 1, side do
+            if idx >= count then break end
+            local offset = Vector3.new((x - (side+1)/2) * spacing, 0, (y - (side+1)/2) * spacing)
+            local pos = centerPos + offset
+            local c = spawnBrainrot(name, pos, scale)
+            if c then table.insert(created, c) end
+            idx = idx + 1
+        end
+        if idx >= count then break end
+    end
+    return created
+end
+
+-- Cleanup: remove all local spawned brainrots
+local function clearLocalBrainrots()
+    for obj,_ in pairs(spawned) do
+        if obj and obj.Parent then
+            pcall(function() obj:Destroy() end)
+        end
+        spawned[obj] = nil
+    end
+    -- also clear any models still in localFolder
+    for _,c in ipairs(localFolder:GetChildren()) do
+        pcall(function() c:Destroy() end)
+    end
+    spawned = {}
+end
+
+-- Chat command: /spawnbrain <name> [count] [scale]
+player.Chatted:Connect(function(msg)
+    local tokens = {}
+    for t in msg:gmatch("%S+") do table.insert(tokens, t) end
+    if #tokens >= 1 and tokens[1]:lower() == "/spawnbrain" then
+        local name = tokens[2] or ""
+        if name == "" then
+            player:Kick("Usage: /spawnbrain <templateName> [count] [scale]") -- optional: or just warn
+            return
+        end
+        local count = tonumber(tokens[3]) or 1
+        local scale = tonumber(tokens[4]) or DEFAULT_SCALE
+        if count <= 1 then
+            spawnBrainrot(name, nil, scale)
+        else
+            spawnMultiple(name, count, nil, 3, scale)
+        end
+    elseif #tokens >= 1 and tokens[1]:lower() == "/clearbrains" then
+        clearLocalBrainrots()
+    end
+end)
+
+-- Keybinds:
+-- B -> spawn lastUsedName or "Brainrot" if unknown (single)
+-- Shift+B -> spawn 4 of lastUsedName
+-- R -> clear local spawns
+local lastUsedName = nil
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.B then
+        local isShift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+        local name = lastUsedName or (ANIMALS_FOLDER:GetChildren()[1] and ANIMALS_FOLDER:GetChildren()[1].Name) or ""
+        if name == "" then
+            warn("No templates found in ReplicatedStorage.Animals")
+            return
+        end
+        if isShift then
+            spawnMultiple(name, 4, camera.CFrame.Position + camera.CFrame.LookVector * 8, 3, DEFAULT_SCALE)
+        else
+            spawnBrainrot(name, nil, DEFAULT_SCALE)
+        end
+    elseif input.KeyCode == Enum.KeyCode.R then
+        clearLocalBrainrots()
+    end
+end)
+
+-- Small helper: attempt to set lastUsedName automatically to first template
+local first = ANIMALS_FOLDER:GetChildren()[1]
+if first then lastUsedName = first.Name end
+
+-- Optional: quick UI prompt (minimal) to set name without editing code
+-- Only create if PlayerGui exists
+local function createQuickGui()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "BrainrotQuickSpawnGui"
+    gui.ResetOnSpawn = false
+    gui.Parent = player:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame", gui)
+    frame.Size = UDim2.new(0,260,0,40)
+    frame.Position = UDim2.new(0,10,0,10)
+    frame.BackgroundTransparency = 0.25
+    frame.BackgroundColor3 = Color3.fromRGB(20,20,22)
+    frame.BorderSizePixel = 0
+
+    local box = Instance.new("TextBox", frame)
+    box.Size = UDim2.new(0,160,0,28)
+    box.Position = UDim2.new(0,8,0,6)
+    box.PlaceholderText = "template name (case sensitive)"
+    box.ClearTextOnFocus = false
+
+    local spawnBtn = Instance.new("TextButton", frame)
+    spawnBtn.Size = UDim2.new(0,80,0,28)
+    spawnBtn.Position = UDim2.new(0,172,0,6)
+    spawnBtn.Text = "Spawn"
+    spawnBtn.Font = Enum.Font.SourceSansBold
+    spawnBtn.TextSize = 14
+
+    spawnBtn.Activated:Connect(function()
+        local nm = box.Text
+        if nm and nm ~= "" then
+            lastUsedName = nm
+            spawnBrainrot(nm, camera.CFrame.Position + camera.CFrame.LookVector*6, DEFAULT_SCALE)
+        end
+    end)
+end
+
+-- Create quick GUI
+pcall(createQuickGui)
+
+print("Local Brainrot Spawner loaded. Use /spawnbrain <name> [count] [scale], press B to spawn, Shift+B for multiple, R to clear.")
+
