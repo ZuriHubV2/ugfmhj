@@ -1,0 +1,324 @@
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+ 
+local Window = Rayfield:CreateWindow({
+   Name = "MHX HUB STEAL A BRAİNROT",
+   Icon = 0,
+   LoadingTitle = "MHX HUB",
+   LoadingSubtitle = "by Sirius",
+   ShowText = "MHX HUB",
+   Theme = "Default",
+   ToggleUIKeybind = "K",
+   DisableRayfieldPrompts = false,
+   DisableBuildWarnings = false,
+   ConfigurationSaving = {
+      Enabled = true,
+      FolderName = "MHX_HUB",
+      FileName = "StealABrainrot"
+   },
+   Discord = {
+      Enabled = false,
+      Invite = "noinvitelink",
+      RememberJoins = true
+   },
+   KeySystem = false -- Key System devre dışı
+})
+ 
+-- PLAYER Sayfası
+local PlayerTab = Window:CreateTab("Player", 0) -- Oyuncu hileleri için sekme
+ 
+-- 1) Speed 50 (Toggle)
+local SpeedEnabled = false
+PlayerTab:CreateToggle({
+   Name = "Speed 50",
+   CurrentValue = false,
+   Callback = function(Value)
+      SpeedEnabled = Value
+      local player = game.Players.LocalPlayer
+      local humanoid = player.Character and player.Character:FindFirstChild("Humanoid")
+      if humanoid then
+         if SpeedEnabled then
+            humanoid.WalkSpeed = 50
+            -- Geriye gitme önleme: Hareket vektörünü kontrol et
+            humanoid.StateChanged:Connect(function(oldState, newState)
+               if newState == Enum.HumanoidStateType.Running then
+                  local moveDirection = humanoid.MoveDirection
+                  if moveDirection.Magnitude > 0 then
+                     humanoid.Parent.HumanoidRootPart.Velocity = Vector3.new(moveDirection.X * 50, humanoid.Parent.HumanoidRootPart.Velocity.Y, moveDirection.Z * 50)
+                  end
+               end
+            end)
+         else
+            humanoid.WalkSpeed = 16 -- Varsayılan hız
+         end
+      end
+   end
+})
+ 
+-- 2) Wall Hack (Toggle)
+local WallHackEnabled = false
+PlayerTab:CreateToggle({
+   Name = "Wall Hack",
+   CurrentValue = false,
+   Callback = function(Value)
+      WallHackEnabled = Value
+      local player = game.Players.LocalPlayer
+      if WallHackEnabled then
+         for _, base in pairs(workspace:GetDescendants()) do
+            if base:IsA("BasePart") and base.CanCollide then
+               base.CanCollide = false -- Duvarlardan geçmeyi sağlar
+            end
+         end
+         -- Geriye gitme önleme: Fizik manipülasyonu
+         game:GetService("RunService").Stepped:Connect(function()
+            if WallHackEnabled and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+               local rootPart = player.Character.HumanoidRootPart
+               rootPart.Velocity = Vector3.new(rootPart.Velocity.X, 0, rootPart.Velocity.Z) -- Y ekseninde sıfırlama
+            end
+         end)
+      else
+         for _, base in pairs(workspace:GetDescendants()) do
+            if base:IsA("BasePart") then
+               base.CanCollide = true -- Varsayılan haline getir
+            end
+         end
+      end
+   end
+})
+ 
+-- 3) Fly (Toggle)
+local FlyEnabled = false
+PlayerTab:CreateToggle({
+   Name = "Fly",
+   CurrentValue = false,
+   Callback = function(Value)
+      FlyEnabled = Value
+      local player = game.Players.LocalPlayer
+      local humanoid = player.Character and player.Character:FindFirstChild("Humanoid")
+      local rootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+      if humanoid and rootPart then
+         if FlyEnabled then
+            local bodyVelocity = Instance.new("BodyVelocity")
+            bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+            bodyVelocity.Parent = rootPart
+            game:GetService("RunService").RenderStepped:Connect(function()
+               if FlyEnabled then
+                  local cam = workspace.CurrentCamera
+                  local moveDirection = Vector3.new(
+                     (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.D) and 1 or 0) - (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.A) and 1 or 0),
+                     (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.Space) and 1 or 0) - (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.LeftShift) and 1 or 0),
+                     (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.W) and 1 or 0) - (game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.S) and 1 or 0)
+                  )
+                  bodyVelocity.Velocity = cam.CFrame:VectorToWorldSpace(moveDirection * 50)
+               end
+            end)
+         else
+            for _, v in pairs(rootPart:GetChildren()) do
+               if v:IsA("BodyVelocity") then
+                  v:Destroy()
+               end
+            end
+         end
+      end
+   end
+})
+ 
+-- ESP Sayfası
+local ESPTab = Window:CreateTab("ESP", 0) -- ESP hileleri için sekme
+ 
+-- 1) Player ESP (Toggle)
+local PlayerESPEnabled = false
+PlayerTab:CreateToggle({
+   Name = "Player ESP",
+   CurrentValue = false,
+   Callback = function(Value)
+      PlayerESPEnabled = Value
+      if PlayerESPEnabled then
+         for _, player in pairs(game.Players:GetPlayers()) do
+            if player ~= game.Players.LocalPlayer and player.Character then
+               local highlight = Instance.new("Highlight")
+               highlight.FillColor = Color3.fromRGB(128, 0, 128) -- Mor iç
+               highlight.OutlineColor = Color3.fromRGB(255, 255, 0) -- Sarı dış
+               highlight.Parent = player.Character
+            end
+         end
+         game.Players.PlayerAdded:Connect(function(player)
+            player.CharacterAdded:Connect(function(character)
+               if PlayerESPEnabled then
+                  local highlight = Instance.new("Highlight")
+                  highlight.FillColor = Color3.fromRGB(128, 0, 128)
+                  highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+                  highlight.Parent = character
+               end
+            end)
+         end)
+      else
+         for _, player in pairs(game.Players:GetPlayers()) do
+            if player.Character then
+               for _, v in pairs(player.Character:GetChildren()) do
+                  if v:IsA("Highlight") then
+                     v:Destroy()
+                  end
+               end
+            end
+         end
+      end
+   end
+})
+ 
+-- 2) Brainrots ESP (Toggle)
+local BrainrotsESPEnabled = false
+PlayerTab:CreateToggle({
+   Name = "Brainrots ESP",
+   CurrentValue = false,
+   Callback = function(Value)
+      BrainrotsESPEnabled = Value
+      if BrainrotsESPEnabled then
+         -- Brainrot item'larını bul (örnek olarak workspace içindeki item'lar varsayımı)
+         for _, item in pairs(workspace:GetDescendants()) do
+            if item.Name:match("Brainrot") or item.Name:match("Tralelero") or item.Name:match("Saturnita") then -- Örnek item isimleri
+               local highlight = Instance.new("Highlight")
+               highlight.FillColor = Color3.fromRGB(0, 0, 255) -- Mavi iç
+               highlight.OutlineColor = Color3.fromRGB(255, 0, 0) -- Kırmızı dış
+               highlight.Parent = item
+            end
+         end
+      else
+         for _, item in pairs(workspace:GetDescendants()) do
+            for _, v in pairs(item:GetChildren()) do
+               if v:IsA("Highlight") then
+                  v:Destroy()
+               end
+            end
+         end
+      end
+   end
+})
+ 
+-- Explosions Sayfası
+local ExplosionsTab = Window:CreateTab("Explosions 💥", 0) -- Explosions hileleri için sekme
+ 
+-- 1) Play Most Valuable Brainrot (Button)
+ExplosionsTab:CreateButton({
+   Name = "Play Most Valuable Brainrot",
+   Callback = function()
+      local player = game.Players.LocalPlayer
+      local mostValuable = nil
+      local highestValue = 0
+      for _, item in pairs(workspace:GetDescendants()) do
+         if item.Name:match("Brainrot") and item:FindFirstChild("Value") then
+            local value = item.Value.Value -- Varsayımsal değer
+            if value > highestValue then
+               highestValue = value
+               mostValuable = item
+            end
+         end
+      end
+      if mostValuable and player.Character then
+         mostValuable.Parent = player.Character -- Item oyuncunun eline geçer
+         -- Baseye ışınlanma
+         local base = workspace:FindFirstChild("Base") -- Varsayımsal base
+         if base then
+            player.Character.HumanoidRootPart.CFrame = base.CFrame
+         end
+      end
+   end
+})
+ 
+-- 2) Tung Bat All Players (Button)
+ExplosionsTab:CreateButton({
+   Name = "Tung Bat All Players",
+   Callback = function()
+      local player = game.Players.LocalPlayer
+      for _, target in pairs(game.Players:GetPlayers()) do
+         if target ~= player and target.Character then
+            local tool = player.Backpack:FindFirstChild("TungYarasa") or player.Character:FindFirstChild("TungYarasa")
+            if tool then
+               tool:Activate() -- Varsayımsal aktivasyon
+               target.Character.HumanoidRootPart.CFrame = player.Character.HumanoidRootPart.CFrame + Vector3.new(5, 0, 0) -- Yakına ışınla ve vur
+            end
+         end
+      end
+   end
+})
+ 
+-- 3) Steal Brainrots (Button)
+ExplosionsTab:CreateButton({
+   Name = "Steal Brainrots",
+   Callback = function()
+      local player = game.Players.LocalPlayer
+      local valuableBrainrots = {"Tralelero", "Saturnita", "Balerina Capucina", "Coco Fanto Ele Fanto", "orcalero Orcala", "odin din dun", "Dragons"}
+      for _, item in pairs(workspace:GetDescendants()) do
+         for _, brainrot in pairs(valuableBrainrots) do
+            if item.Name == brainrot then
+               item.Parent = player.Character -- Item oyuncunun eline geçer
+            end
+         end
+      end
+   end
+})
+ 
+-- 4) Auto Close (Button)
+ExplosionsTab:CreateButton({
+   Name = "Auto Close",
+   Callback = function()
+      local player = game.Players.LocalPlayer
+      local base = workspace:FindFirstChild("Base") -- Varsayımsal base
+      if base and base:FindFirstChild("CloseButton") then
+         wait(27) -- Son 3 saniye kala (varsayımsal 30 saniyelik kapanma süresi)
+         player.Character.HumanoidRootPart.CFrame = base.CloseButton.CFrame
+         fireclickdetector(base.CloseButton:FindFirstChildOfClass("ClickDetector"))
+      end
+   end
+})
+ 
+-- 5) No Falling (Toggle)
+local NoFallingEnabled = false
+ExplosionsTab:CreateToggle({
+   Name = "No Falling",
+   CurrentValue = false,
+   Callback = function(Value)
+      NoFallingEnabled = Value
+      local player = game.Players.LocalPlayer
+      if NoFallingEnabled and player.Character then
+         local humanoid = player.Character:FindFirstChild("Humanoid")
+         humanoid.StateChanged:Connect(function(oldState, newState)
+            if newState == Enum.HumanoidStateType.FallingDown then
+               humanoid:ChangeState(Enum.HumanoidStateType.Running)
+               -- Brainrot'u baseye ışınla
+               local brainrot = player.Character:FindFirstChildWhichIsA("Tool")
+               if brainrot then
+                  local base = workspace:FindFirstChild("Base")
+                  if base then
+                     brainrot.Parent = base
+                  end
+               end
+            end
+         end)
+      end
+   end
+})
+ 
+-- 6) Go Base (Button)
+ExplosionsTab:CreateButton({
+   Name = "Go Base",
+   Callback = function()
+      local player = game.Players.LocalPlayer
+      local base = workspace:FindFirstChild("Base") -- Varsayımsal base
+      if base and player.Character then
+         player.Character.HumanoidRootPart.CFrame = base.CFrame
+      end
+   end
+})
+ 
+-- 7) Laser Block (Button)
+ExplosionsTab:CreateButton({
+   Name = "Laser Block",
+   Callback = function()
+      for _, base in pairs(workspace:GetDescendants()) do
+         if base.Name:match("Laser") then
+            base:Destroy() -- Lazer engellerini sil
+         end
+      end
+   end
+})
